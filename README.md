@@ -17,10 +17,10 @@ Complete the code (CONFIGURATION section) with the IP of the remote lora node, t
 
 The program reports the arrival of packets with non-compliant payload for messages (e.g. location packets) and they are ignored, as well as messages that have a different destination. This way of doing things can be used for future developments. Here is an example of what is received by the code, coming from the node and the telegram bot:<br>
 
-!(https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_01.jpg)
+![](https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_01.jpg)
 <br>
 This is bot side:
 <br>
-!(https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_02.jpg)
+![](https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_02.jpg)
 
 
