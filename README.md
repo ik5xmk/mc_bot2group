@@ -22,5 +22,6 @@ The program reports the arrival of packets with non-compliant payload for messag
 This is bot side:
 <br>
 ![](https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_02.jpg)
-
-
+<br>
+Other features in development:<br>
+http://lora.dig-italia.it
