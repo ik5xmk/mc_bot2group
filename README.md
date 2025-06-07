@@ -15,6 +15,12 @@ The first step is to create a telegram bot, call @BotFather and follow the instr
 
 Complete the code (CONFIGURATION section) with the IP of the remote lora node, the node callsign, the MCC prefix and the telegram bot data. Once done, run the code and it will listen locally to receive data from both the bot and the node. Go to the bot and try to send a message to a group (not privately), you will see it transit to the node and then out of it (check on the meshcom server). Have the meshcom network send a message to a group that you configured in your node, it will arrive on your node and then to the code to finally be sent to your telegram bot.<br>
 
-The program reports the arrival of packets with non-compliant payload for messages (e.g. location packets) and they are ignored, as well as messages that have a different destination. This way of doing things can be used for future developments. Here is an example of what is received by the code, coming from the node and the telegram bot:
+The program reports the arrival of packets with non-compliant payload for messages (e.g. location packets) and they are ignored, as well as messages that have a different destination. This way of doing things can be used for future developments. Here is an example of what is received by the code, coming from the node and the telegram bot:<br>
+
+!(https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_01.jpg)
+<br>
+This is bot side:
+<br>
+!(https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_02.jpg)
 
 
