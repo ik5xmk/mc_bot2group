@@ -37,6 +37,9 @@ def genera_msg_id(lunghezza=8):
 
 def is_valid_dst(dst: str) -> bool:
     # Controlla che il campo dst sia valido: inizi con MCC_GROUP e massimo 5 cifre
+    # update per funzione VIA fw 4.35p.13.06.2026
+    # mi interessa sempre acquisire il solo gruppo
+    dst = dst.split(",")[-1].strip
     return dst.startswith(MCC_GROUP) and re.fullmatch(r"\d{3,5}", dst) is not None
 
 
