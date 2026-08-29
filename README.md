@@ -24,4 +24,9 @@ This is bot side:
 ![](https://github.com/ik5xmk/mc_bot2group/blob/main/mc_bot2group_02.jpg)
 <br>
 Other features in development:<br>
-http://lora.dig-italia.it
+http://lora.dig-italia.it<br>
+<br>
+Update 29.08.2025:<br>
+- netconsole_telegram.py allows net console tcp connection to the lora card (set net console ON anche check NAT on firewall)<br>
+- EXT UDP must be set to ON (every IP is OK, not important)<br>
+- broken connection (lora card restart) is automatically resumed<br>
