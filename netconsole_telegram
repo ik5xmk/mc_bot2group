@@ -1,0 +1,492 @@
+import socket
+import json
+import re
+import requests
+import threading
+import time
+from datetime import datetime
+
+# ============================================================
+# CONFIGURAZIONE
+# ============================================================
+
+# --- MESHCOM NET CONSOLE ---
+MESHCOM_HOST = "192.168.1.123"
+MESHCOM_PORT = 2323
+
+TCP_CONNECT_TIMEOUT = 10
+TCP_RECV_TIMEOUT = 2
+TCP_RECONNECT_DELAY = 5
+
+# Controllo vitalita' della sessione TCP
+TCP_HEARTBEAT_INTERVAL = 10
+TCP_KEEPIDLE = 10
+TCP_KEEPINTVL = 5
+TCP_KEEPCNT = 3
+
+# --- GRUPPI MESHCOM ---
+# Prefissi ammessi. Il gruppo deve essere composto da 3 a 5 cifre.
+GROUP_PREFIX_ALLOW = [
+    "222",
+    "292",
+]
+
+# Gruppi esplicitamente esclusi anche se appartenenti ai prefissi ammessi.
+GROUP_DENY = [
+    "22299",
+]
+
+# --- TELEGRAM ---
+TELEGRAM_BOT_TOKEN = "INSERIRE_QUI_IL_TOKEN_DEL_CODICE_ORIGINALE"
+TELEGRAM_CHAT_ID = "-INSERIRE_CHAT_ID"
+
+POLL_INTERVAL = 3
+
+
+# ============================================================
+# STATO NET CONSOLE
+# ============================================================
+
+meshcom_socket = None
+meshcom_lock = threading.Lock()
+meshcom_connected = threading.Event()
+
+
+# ============================================================
+# GRUPPI
+# ============================================================
+
+def normalize_dst(dst: str) -> str:
+    """Restituisce l'ultimo elemento del campo dst MeshCom."""
+    if not isinstance(dst, str):
+        return ""
+    return dst.split(",")[-1].strip()
+
+
+def is_valid_dst(dst: str) -> bool:
+    """
+    Accetta gruppi di 3-5 cifre appartenenti a uno dei prefissi
+    GROUP_PREFIX_ALLOW, salvo quelli presenti in GROUP_DENY.
+    """
+    dst = normalize_dst(dst)
+
+    if re.fullmatch(r"\d{3,5}", dst) is None:
+        return False
+
+    if dst in GROUP_DENY:
+        return False
+
+    return any(dst.startswith(prefix) for prefix in GROUP_PREFIX_ALLOW)
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def send_to_telegram(text: str) -> None:
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if not response.ok:
+            print(f"Errore Telegram: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Errore durante l'invio a Telegram: {e}")
+
+
+def telegram_command_listener():
+    # IDENTICA logica del programma UDP originale.
+    # Cambia soltanto la funzione finale di invio:
+    # send_udp_message() -> send_meshcom_message()
+    print("Inizio polling comandi Telegram...")
+    last_update_id = None
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+            if last_update_id:
+                url += f"?offset={last_update_id + 1}"
+
+            response = requests.get(url)
+            if response.ok:
+                data = response.json()
+                for update in data.get("result", []):
+                    last_update_id = update["update_id"]
+                    message = update.get("message", {})
+                    text = message.get("text", "")
+                    chat_id = message.get("chat", {}).get("id")
+
+                    if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                        continue  # ignora altri utenti
+
+                    # Cerca comandi in formato: /22201 messaggio
+                    match = re.match(r'^/(\d{3,5})\s+(.*)', text.strip())
+                    if match:
+                        dst = match.group(1)
+                        msg = match.group(2)
+
+                        if is_valid_dst(dst):
+                            print(f"Comando ricevuto: dst={dst}, msg={msg}")
+                            send_meshcom_message(dst, msg)
+                        else:
+                            send_to_telegram(
+                                "ERRORE: 'dst' non valido o gruppo escluso"
+                            )
+            else:
+                print(
+                    f"ERRORE polling Telegram: "
+                    f"{response.status_code} - {response.text}"
+                )
+
+        except Exception as e:
+            print(f"ERRORE nel polling Telegram: {e}")
+
+        time.sleep(POLL_INTERVAL)
+
+
+# ============================================================
+# NET CONSOLE - CONNESSIONE
+# ============================================================
+
+def close_meshcom_connection():
+    global meshcom_socket
+
+    with meshcom_lock:
+        sock = meshcom_socket
+        meshcom_socket = None
+        meshcom_connected.clear()
+
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def configure_tcp_keepalive(sock):
+    """Abilita TCP keepalive con tempi brevi, quando supportato."""
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPIDLE)
+
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPINTVL)
+
+        if hasattr(socket, "TCP_KEEPCNT"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPCNT)
+
+    except Exception as e:
+        print(f"ATTENZIONE: TCP keepalive non completamente configurato: {e}")
+
+
+def connect_meshcom():
+    """Apre una normale connessione TCP alla NET CONSOLE MeshCom."""
+    global meshcom_socket
+
+    print(
+        f"Connessione alla MeshCom NET CONSOLE "
+        f"{MESHCOM_HOST}:{MESHCOM_PORT}..."
+    )
+
+    sock = socket.create_connection(
+        (MESHCOM_HOST, MESHCOM_PORT),
+        timeout=TCP_CONNECT_TIMEOUT
+    )
+
+    configure_tcp_keepalive(sock)
+    sock.settimeout(TCP_RECV_TIMEOUT)
+
+    with meshcom_lock:
+        meshcom_socket = sock
+        meshcom_connected.set()
+
+    print(
+        f"Connessione TCP NET CONSOLE stabilita: "
+        f"{MESHCOM_HOST}:{MESHCOM_PORT}"
+    )
+
+    return sock
+
+
+# ============================================================
+# NET CONSOLE - INVIO
+# ============================================================
+
+def send_meshcom_message(dst: str, msg: str):
+    """
+    Sintassi NET CONSOLE per invio messaggio:
+        ::{22251}buongiorno
+
+    Viene aggiunto CRLF alla fine della riga.
+    """
+    if not is_valid_dst(dst):
+        print(f"Destinazione non valida: {dst}")
+        return False
+
+    dst = normalize_dst(dst)
+
+    # Una riga Telegram deve corrispondere a un solo comando NET CONSOLE.
+    msg = str(msg).replace("\r", " ").replace("\n", " ").strip()
+
+    if not msg:
+        print("Messaggio vuoto: invio annullato.")
+        return False
+
+    command = f"::{{{dst}}}{msg}\r\n"
+    encoded = command.encode("utf-8")
+
+    failed = False
+
+    with meshcom_lock:
+        sock = meshcom_socket
+
+        if sock is None or not meshcom_connected.is_set():
+            print("NET CONSOLE non connessa: messaggio non inviato.")
+            return False
+
+        try:
+            sock.sendall(encoded)
+            current_dateTime = datetime.now()
+            print(
+                f"Inviato ({current_dateTime}) via NET CONSOLE -> "
+                f"::{{{dst}}}{msg}"
+            )
+            return True
+
+        except Exception as e:
+            print(f"Errore nell'invio NET CONSOLE: {e}")
+            failed = True
+
+    if failed:
+        close_meshcom_connection()
+
+    return False
+
+
+# ============================================================
+# NET CONSOLE - PARSING JSON
+# ============================================================
+
+def extract_json_from_console_line(line: str):
+    """
+    Estrae l'oggetto JSON da righe del tipo:
+
+      [EXT] Out: {...} Len: 277
+
+    Il parser tiene conto di virgolette, escape e parentesi graffe
+    eventualmente presenti nel testo del messaggio.
+    """
+    start = line.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for pos in range(start, len(line)):
+        ch = line[pos]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = line[start:pos + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError as e:
+                    print(f"ATTENZIONE: JSON non valido: {e}")
+                    return None
+
+    return None
+
+
+def process_meshcom_line(line: str):
+    line = line.strip("\r\n")
+
+    if not line:
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now}] NET CONSOLE RX: {line}")
+
+    payload = extract_json_from_console_line(line)
+
+    # Banner, prompt e righe diagnostiche della console.
+    if payload is None:
+        return
+
+    if (
+        payload.get("type") == "msg"
+        and "dst" in payload
+        and "msg" in payload
+        and "src" in payload
+    ):
+        dst_raw = str(payload["dst"])
+        dst = normalize_dst(dst_raw)
+        src = str(payload["src"])
+        msg = str(payload["msg"])
+
+        if is_valid_dst(dst_raw):
+            # IDENTICO formato Telegram del listener UDP originale.
+            text = f"Gruppo:{dst} Origine:{src}\n{msg}"
+            print(f"Inoltro a Telegram: {text}")
+            send_to_telegram(text)
+        else:
+            print(f"ATTENZIONE: 'dst' non valido/escluso: {dst_raw}")
+
+
+# ============================================================
+# NET CONSOLE - LISTENER
+# ============================================================
+
+def meshcom_console_listener():
+    """
+    Connessione persistente alla NET CONSOLE con riconnessione automatica.
+
+    Usa TCP keepalive e un heartbeat applicativo periodico. In questo modo
+    un riavvio della scheda viene rilevato anche in assenza di messaggi.
+    """
+    rx_buffer = ""
+    last_heartbeat = 0.0
+
+    while True:
+        if not meshcom_connected.is_set():
+            rx_buffer = ""
+            last_heartbeat = 0.0
+
+            try:
+                connect_meshcom()
+                last_heartbeat = time.monotonic()
+            except Exception as e:
+                print(f"Errore connessione NET CONSOLE: {e}")
+                close_meshcom_connection()
+                time.sleep(TCP_RECONNECT_DELAY)
+                continue
+
+        try:
+            with meshcom_lock:
+                sock = meshcom_socket
+
+            if sock is None:
+                meshcom_connected.clear()
+                continue
+
+            now = time.monotonic()
+
+            # Heartbeat applicativo: una riga vuota non genera messaggi
+            # MeshCom ma forza traffico sulla stessa connessione TCP.
+            if now - last_heartbeat >= TCP_HEARTBEAT_INTERVAL:
+                try:
+                    with meshcom_lock:
+                        if meshcom_socket is not sock or not meshcom_connected.is_set():
+                            raise ConnectionError(
+                                "Sessione NET CONSOLE sostituita o non valida."
+                            )
+
+                        sock.sendall(b"\r\n")
+
+                    last_heartbeat = now
+
+                except Exception as e:
+                    raise ConnectionError(
+                        f"Heartbeat NET CONSOLE fallito: {e}"
+                    ) from e
+
+            try:
+                data = sock.recv(4096)
+
+            except socket.timeout:
+                # Il timeout di lettura non significa che la connessione
+                # sia caduta: il ciclo continua e l'heartbeat la verifica.
+                continue
+
+            if not data:
+                raise ConnectionError(
+                    "Connessione NET CONSOLE chiusa dalla scheda."
+                )
+
+            rx_buffer += data.decode("utf-8", errors="replace")
+            rx_buffer = rx_buffer.replace("\r\n", "\n")
+            rx_buffer = rx_buffer.replace("\r", "\n")
+
+            while "\n" in rx_buffer:
+                line, rx_buffer = rx_buffer.split("\n", 1)
+                process_meshcom_line(line)
+
+        except Exception as e:
+            print(f"Connessione NET CONSOLE persa: {e}")
+            close_meshcom_connection()
+
+            print(
+                f"Tentativo di riconnessione tra "
+                f"{TCP_RECONNECT_DELAY} secondi..."
+            )
+
+            time.sleep(TCP_RECONNECT_DELAY)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    print("====================================================")
+    print(" MeshCom NET CONSOLE <-> Telegram")
+    print("====================================================")
+    print(
+        f"MeshCom NET CONSOLE: "
+        f"{MESHCOM_HOST}:{MESHCOM_PORT}"
+    )
+    print(
+        "Prefissi gruppi ammessi: "
+        + ", ".join(GROUP_PREFIX_ALLOW)
+    )
+    print(
+        "Gruppi esclusi: "
+        + (", ".join(GROUP_DENY) if GROUP_DENY else "nessuno")
+    )
+    print("====================================================")
+
+    threading.Thread(
+        target=meshcom_console_listener,
+        daemon=True
+    ).start()
+
+    threading.Thread(
+        target=telegram_command_listener,
+        daemon=True
+    ).start()
+
+    try:
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("Interrotto dall'utente.")
+        close_meshcom_connection()
+
+
+if __name__ == "__main__":
+    main()
